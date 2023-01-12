@@ -1,6 +1,7 @@
 {
 module Parser
   ( parseC
+  , parseCExp
   , Name (..)
   , Var (..)
   , UOp (..)
@@ -13,6 +14,7 @@ module Parser
   , Def (..)
   , Stmt (..)
   , StmtBlock (..)
+  , info
   ) where
 
 import Data.ByteString.Lazy.Char8 (ByteString)
@@ -53,7 +55,7 @@ import qualified Lexer as L
   'char'     { L.RangedToken L.TypeChar _ }
   'int'      { L.RangedToken L.TypeInt _ }
   'float'    { L.RangedToken L.TypeFloat _ }
-  'string'    { L.RangedToken L.TypeString _ }
+  'string'   { L.RangedToken L.TypeString _ }
   -- Arithmetic operators
   '++'       { L.RangedToken L.PlusPlus _ }
   '--'       { L.RangedToken L.MinusMinus _ }
