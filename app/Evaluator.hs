@@ -3,6 +3,7 @@ module Evaluator where
 import           AST
 import           Control.Lens               hiding (Empty)
 import           Control.Monad.State
+import           Control.Monad.Except
 import           Data.ByteString.Lazy.Char8 (ByteString)
 import           Data.Functor
 import           Data.Kind
@@ -79,29 +80,46 @@ evalExp (EPrintInt exp) = do
   exp <- evalExp exp
   liftIO $ print exp
   pure exp
+evalExp EVoid = pure ()
+evalExp (EI2F exp) = fmap fromIntegral $ evalExp exp
+evalExp (EF2I exp) = fmap round $ evalExp exp
+evalExp (EI2C exp) = fmap toEnum $ evalExp exp
+evalExp (EC2I exp) = fmap fromEnum $ evalExp exp
+evalExp (E2V exp)  = evalExp exp $> ()
 
-evalStmt :: Stmt ctx -> StateT (Ctx ctx) IO ()
-evalStmt (Exp exp) = evalExp exp $> ()
-evalStmt (Def dt dim sb)   = StateT $ \s -> fmap (fmap snd) $ runStateT (evalStmts sb) (initC dt dim, s)
-
-evalStmts :: StmtBlock ctx -> StateT (Ctx ctx) IO ()
-evalStmts Empty               = pure ()
-evalStmts (st :. sb)          = evalStmt st >> evalStmts sb
-evalStmts (Branch exp sb sb') = do
-  cond <- evalExp exp
+evalStmt :: Stmt ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Bool
+evalStmt (Exp exp) = lift (evalExp exp) $> False
+evalStmt (Branch exp sb sb') = do
+  cond <- lift $ evalExp exp
   if cond /= 0
     then evalStmts sb
     else evalStmts sb'
+evalStmt (Loop exp sb) = do
+  cond <- lift $ evalExp exp
+  if cond /= 0
+    then do
+      break <- evalStmts sb
+      if break
+        then pure False
+        else evalStmt (Loop exp sb)
+    else pure False
+evalStmt (Def dt dim sb) = mapExceptT (\(StateT f) -> StateT $ fmap (fmap snd) . f . (initC dt dim,)) (evalStmts sb)
+
+evalStmts :: StmtBlock ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Bool
+evalStmts (Return exp) = lift (evalExp exp) >>= throwError
+evalStmts Break        = pure True
+evalStmts Empty        = pure False
+evalStmts (st :. sb)   = evalStmt st >> evalStmts sb
 
 -- * Tests
 
 run :: ByteString -> IO ()
 run bs = do
-  case L.runAlex bs P.parseC  of
+  case L.runAlex bs P.parseC of
     Left e -> fail e
     Right (P.StmtBlock _ stmts) -> do
-      case formStmtBlock [] (Left "") (Left "") stmts of
+      case formStmtBlock [] DVoid (stmts ++ [P.Return undefined Nothing]) of
         Left e -> fail e
-        Right (s :: StmtBlock '[], _) -> do
-          runStateT (evalStmts s) ()
+        Right (s :: StmtBlock '[] 'BVoid) -> do
+          runStateT (runExceptT (evalStmts s)) ()
           pure ()

@@ -47,23 +47,36 @@ formExp tbl (P.ECall _ (P.Name _ "print") [exp]) = do
     Just Refl -> pure $ Sig DInt (EPrintInt exp)
 formExp _ _ = error "TODO"
 
+tryCastExp :: DBType b -> Sig (Exp ctx) -> Either String (Exp ctx b)
+tryCastExp DInt (Sig DInt exp)       = pure exp
+tryCastExp DInt (Sig DFloat exp)     = pure $ EF2I exp
+tryCastExp DInt (Sig DChar exp)      = pure $ EC2I exp
+tryCastExp DFloat (Sig DInt exp)     = pure $ EI2F exp
+tryCastExp DFloat (Sig DFloat exp)   = pure exp
+tryCastExp DFloat (Sig DChar exp)    = pure $ EI2F (EC2I exp)
+tryCastExp DChar (Sig DInt exp)      = pure $ EI2C exp
+tryCastExp DChar (Sig DFloat exp)    = pure $ EI2C (EF2I exp)
+tryCastExp DChar (Sig DChar exp)     = pure exp
+tryCastExp DString (Sig DString exp) = pure exp
+tryCastExp DVoid (Sig DVoid exp)     = pure exp
+tryCastExp DVoid (Sig _ exp)         = pure $ E2V exp
+tryCastExp b (Sig ty _)              = Left $ "Can't cast expression of type " <> show ty <> " to " <> show b <> "."
+
 formStmtBlock
-  :: Table ctx -> Either String (StmtBlock ctx) -> Either String (StmtBlock ctx)
-  -> [P.Stmt L.Range] -> Either String (StmtBlock ctx, Bool)
-formStmtBlock tbl break continue []                                = pure (Empty, False)
-formStmtBlock tbl break continue ((P.Defs _ _ []) : xs)            = formStmtBlock tbl break continue xs
-formStmtBlock tbl break continue ((P.Defs r ty ((P.Def _ les (P.Name _ txt) mExp) : defs)) : xs) = do
-  let btype = case ty of
-        P.Int ra    -> Sig DInt DInt
-        P.Float ra  -> Sig DFloat DFloat
-        P.Char ra   -> Sig DChar DChar
-        P.String ra -> Sig DString DString
-      go (Sig ty ty') [] = Sig (DBType ty) D0
-      go sig ((P.Length r i) : ls) = case go sig ls of Sig ty dim -> Sig (DCArray ty) (DS i dim)
-  case go btype les of
+  :: Table ctx -> DBType b
+  -> [P.Stmt L.Range] -> Either String (StmtBlock ctx b)
+formStmtBlock tbl b []                              = pure Empty
+formStmtBlock tbl b (P.Defs _ _ [] : xs)            = formStmtBlock tbl b xs
+formStmtBlock tbl b (P.Defs r ty (P.Def _ les (P.Name _ txt) mExp : defs) : xs) = do
+  let go [] = case ty of
+          P.Int ra    -> Sig (DBType DInt) D0
+          P.Float ra  -> Sig (DBType DFloat) D0
+          P.Char ra   -> Sig (DBType DChar) D0
+          P.String ra -> Sig (DBType DString) D0
+      go (P.Length r i : ls) = case go ls of Sig ty dim -> Sig (DCArray ty) (DS i dim)
+  case go les of
     Sig ctype dim -> do
-      (s, bool) <- formStmtBlock ((txt, Sig ctype Z) : weakenTable tbl)
-        (fmap weakenStmtBlock break) (fmap weakenStmtBlock continue) ((P.Defs r ty defs) : xs)
+      s <- formStmtBlock ((txt, Sig ctype Z) : weakenTable tbl) b (P.Defs r ty defs : xs)
       s' <- case mExp of
         Nothing -> pure s
         Just exp -> do
@@ -71,40 +84,44 @@ formStmtBlock tbl break continue ((P.Defs r ty ((P.Def _ les (P.Name _ txt) mExp
           case (basic ctype =?= ty, DBType ty =?= ctype) of
             (Just Refl, Just Refl) -> pure $ Exp (EAssign (LeftVal Z L) (renExp S exp)) :. s
             _                      -> Left ""
-      pure $ (Def ctype dim s' :. Empty, bool)
-formStmtBlock tbl break continue ((P.If ra exp st) : xs) = do
+      pure $ Def ctype dim s' :. Empty
+formStmtBlock tbl b (P.If ra exp st : xs) = do
+  exp <- formExp tbl exp
+  exp <- tryCastExp DInt exp
+  b1 <- formStmtBlock tbl b [st]
+  xs <- formStmtBlock tbl b xs
+  pure $ Branch exp b1 Empty :. xs
+formStmtBlock tbl b (P.IfElse ra exp st st' : xs) = do
+  exp <- formExp tbl exp
+  exp <- tryCastExp DInt exp
+  b1 <- formStmtBlock tbl b [st]
+  b2 <- formStmtBlock tbl b [st']
+  xs <- formStmtBlock tbl b xs
+  pure $ Branch exp b1 b2 :. xs
+formStmtBlock tbl b (P.While ra exp st : xs)        = do
   Sig ty exp <- formExp tbl exp
   case ty =?= DInt of
     Nothing -> Left ""
     Just Refl -> do
-      (b1, bool1) <- formStmtBlock tbl break continue [st]
-      (b, bool2) <- formStmtBlock tbl break continue xs
-      pure $ (Branch exp (b1 <> b) b, bool1 <> bool2) -- Wrong
-formStmtBlock tbl break continue ((P.IfElse ra exp st st') : xs) = do
+      xs <- formStmtBlock tbl b xs
+      body <- formStmtBlock tbl b [st]
+      pure $ Loop exp body :. xs
+formStmtBlock tbl b (P.For ra st exp exp' st' : xs) = error "TODO"
+formStmtBlock tbl b (P.Break ra : xs)               = pure Break -- TODO: Check scope
+formStmtBlock tbl b (P.Continue ra : xs)            = pure Empty
+formStmtBlock tbl b (P.Return ra mexp : _)          = do
+  case mexp of
+    Nothing -> case b of
+      DVoid -> pure $ Return EVoid
+      _     -> Left ""
+    Just exp -> do
+      sexp <- formExp tbl exp
+      exp <- tryCastExp b sexp
+      pure $ Return exp
+formStmtBlock tbl b (P.Exp ra exp : xs)             = do
   Sig ty exp <- formExp tbl exp
-  case ty =?= DInt of
-    Nothing -> Left ""
-    Just Refl -> do
-      (b1, bool1) <- formStmtBlock tbl break continue [st]
-      (b2, bool2) <- formStmtBlock tbl break continue [st']
-      (b, bool3) <- formStmtBlock tbl break continue xs
-      pure $ (Branch exp (b1 <> b) (b2 <> b), bool1 <> bool2 <> bool3)
-formStmtBlock tbl break continue ((P.While ra exp st) : xs)        = do
-  Sig ty exp <- formExp tbl exp
-  case ty =?= DInt of
-    Nothing -> Left ""
-    Just Refl -> do
-      rec (break', bool) <- formStmtBlock tbl break continue xs
-          (body, bOrC) <- formStmtBlock tbl (pure break') (pure continue') [st]
-          let continue' = Branch exp (if bOrC then body else body <> continue') break'
-      pure (continue', bool)
-formStmtBlock tbl break continue ((P.For ra st exp exp' st') : xs) = error "TODO"
-formStmtBlock tbl break continue ((P.Break ra) : xs)               = fmap (, True) break
-formStmtBlock tbl break continue ((P.Continue ra) : xs)            = fmap (, True) continue
-formStmtBlock tbl break continue ((P.Exp ra exp) : xs)             = do
-  Sig ty exp <- formExp tbl exp
-  (b, bool) <- formStmtBlock tbl break continue xs
-  pure $ (Exp exp :. b, bool)
-formStmtBlock tbl break continue ((P.Block (P.StmtBlock n ys)) : xs) =
-  liftA2 (<>) (formStmtBlock tbl break continue ys) (formStmtBlock tbl break continue xs)
-formStmtBlock tbl break continue ((P.Empty ra) : xs)                 = formStmtBlock tbl break continue xs
+  b <- formStmtBlock tbl b xs
+  pure $ Exp exp :. b
+formStmtBlock tbl b (P.Block (P.StmtBlock n ys) : xs) =
+  liftA2 (<>) (formStmtBlock tbl b ys) (formStmtBlock tbl b xs)
+formStmtBlock tbl b (P.Empty ra : xs)                 = formStmtBlock tbl b xs

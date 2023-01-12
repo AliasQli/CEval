@@ -49,6 +49,7 @@ import qualified Lexer as L
   while      { L.RangedToken L.While _ }
   break      { L.RangedToken L.Break _ }
   continue   { L.RangedToken L.Continue _ }
+  return     { L.RangedToken L.Return _ }
   'char'     { L.RangedToken L.TypeChar _ }
   'int'      { L.RangedToken L.TypeInt _ }
   'float'    { L.RangedToken L.TypeFloat _ }
@@ -194,6 +195,8 @@ stmt :: { Stmt L.Range }
   | for '(' forfirst exp ';' exp ')' stmt { For (L.rtRange $1 <-> info $8) $3 $4 $6 $8 }
   | break ';'                             { Break (L.rtRange $1 <-> L.rtRange $2) }
   | continue ';'                          { Continue (L.rtRange $1 <-> L.rtRange $2) }
+  | return ';'                            { Return (L.rtRange $1 <-> L.rtRange $2) Nothing }
+  | return exp ';'                        { Return (L.rtRange $1 <-> L.rtRange $3) (Just $2) }
   | exp ';'                               { Exp (info $1 <-> L.rtRange $2) $1 }
   | stmtblock                             { Block $1 }
   | ';'                                   { Empty (L.rtRange $1) }
@@ -327,7 +330,7 @@ data Stmt a
   | For a (ForFirst a) (Exp a) (Exp a) (Stmt a)
   | Break a
   | Continue a
-  -- | Return a (Maybe (Exp a))
+  | Return a (Maybe (Exp a))
   | Exp a (Exp a)
   | Block (StmtBlock a)
   | Empty a

@@ -48,6 +48,7 @@ instance DecEq BType where
   DFloat =?= DFloat   = Just Refl
   DChar =?= DChar     = Just Refl
   DString =?= DString = Just Refl
+  DVoid =?= DVoid     = Just Refl
   _ =?= _             = Nothing
 
 -- | C type.
@@ -120,36 +121,43 @@ data Exp (ctx :: [CType]) (ty :: BType) where
   EAssign :: LeftVal xs b -> Exp xs b -> Exp xs b
   EAdd :: Exp xs 'BInt -> Exp xs 'BInt -> Exp xs 'BInt
   EPrintInt :: Exp xs 'BInt -> Exp xs 'BInt
+  EVoid :: Exp xs 'BVoid
+  EI2F :: Exp xs 'BInt -> Exp xs 'BFloat
+  EF2I :: Exp xs 'BFloat -> Exp xs 'BInt
+  EI2C :: Exp xs 'BInt -> Exp xs 'BChar
+  EC2I :: Exp xs 'BChar -> Exp xs 'BInt
+  E2V :: Exp xs x -> Exp xs 'BVoid
   -- And more
 
 deriving instance Show (Sig (Exp ctx))
 deriving instance Show (Exp ctx ty)
 
 -- | A statement.
-data Stmt (ctx :: [CType]) where
-  Exp :: Exp xs x -> Stmt xs
-  Def :: DCType c -> Dim c -> StmtBlock (c ': xs) -> Stmt xs
+data Stmt (ctx :: [CType]) (b :: BType) where
+  Exp :: Exp xs y -> Stmt xs x
+  Branch :: Exp xs 'BInt -> StmtBlock xs x -> StmtBlock xs x -> Stmt xs x
+  Loop :: Exp xs 'BInt -> StmtBlock xs x -> Stmt xs x
+  Def :: DCType c -> Dim c -> StmtBlock (c ': xs) x -> Stmt xs x
 
-deriving instance Show (Stmt ctx)
+deriving instance Show (Sig (Stmt ctx))
+deriving instance Show (Stmt ctx x)
 
 -- | A statement block.
-data StmtBlock (ctx :: [CType]) where
-  Empty :: StmtBlock xs
-  (:.) :: Stmt xs -> StmtBlock xs -> StmtBlock xs
-  Branch :: Exp xs 'BInt -> StmtBlock xs -> StmtBlock xs -> StmtBlock xs
+data StmtBlock (ctx :: [CType]) (b :: BType) where
+  Return :: Exp xs x -> StmtBlock xs x
+  Break :: StmtBlock xs x
+  Empty :: StmtBlock xs x
+  (:.) :: Stmt xs x -> StmtBlock xs x -> StmtBlock xs x
 infixr 7 :.
 
-deriving instance Show (StmtBlock ctx)
+deriving instance Show (Sig (StmtBlock ctx))
+deriving instance Show (StmtBlock ctx x)
 
-instance Semigroup Bool where
-  (<>) :: Bool -> Bool -> Bool
-  (<>) = (||)
-
-instance Semigroup (StmtBlock ctx) where
-  (<>) :: StmtBlock ctx -> StmtBlock ctx -> StmtBlock ctx
-  Empty <> stmts             = stmts
-  sig :. sb <> stmts         = sig :. (sb <> stmts)
-  Branch exp sb sb' <> stmts = Branch exp (sb <> stmts) (sb' <> stmts)
+instance Semigroup (StmtBlock ctx b) where
+  (<>) :: StmtBlock ctx b -> StmtBlock ctx b -> StmtBlock ctx b
+  Empty <> stmts     = stmts
+  sig :. sb <> stmts = sig :. (sb <> stmts)
+  s <> _             = s
 
 -- | Map from variable name to its /de Bruijn/ index, used during typechecking.
 type Table ctx = [(Text, Sig (Var ctx))]
@@ -170,7 +178,7 @@ renw r _lv (S var) = r var
 wren :: Renaming ctx ctx2 -> Renaming ctx (x ': ctx2)
 wren r = S . r
 
--- Simply, renVar = S.
+-- Simply, renVar = id.
 
 renIx :: Renaming ctx ctx2 -> Ix ctx x -> Ix ctx2 x
 renIx _ L           = L
@@ -185,17 +193,26 @@ renExp _ (EInt n)         = EInt n
 renExp r (EAssign lv exp) = EAssign (renLeftVal r lv) (renExp r exp)
 renExp r (EAdd exp exp')  = EAdd (renExp r exp) (renExp r exp')
 renExp r (EPrintInt exp)  = EPrintInt (renExp r exp)
+renExp _ EVoid            = EVoid
+renExp r (EI2F exp)       = EI2F (renExp r exp)
+renExp r (EF2I exp)       = EF2I (renExp r exp)
+renExp r (EI2C exp)       = EI2C (renExp r exp)
+renExp r (EC2I exp)       = EC2I (renExp r exp)
+renExp r (E2V exp)        = E2V (renExp r exp)
 
-renStmt :: Renaming ctx ctx2 -> Stmt ctx -> Stmt ctx2
-renStmt r (Exp exp)       = Exp (renExp r exp)
-renStmt r (Def dt dim sb) = Def dt dim (renStmtBlock (renw (wren r) Z) sb)
+renStmt :: Renaming ctx ctx2 -> Stmt ctx x -> Stmt ctx2 x
+renStmt r (Exp exp)           = Exp (renExp r exp)
+renStmt r (Def dt dim sb)     = Def dt dim (renStmtBlock (renw (wren r) Z) sb)
+renStmt r (Branch exp sb sb') = Branch (renExp r exp) (renStmtBlock r sb) (renStmtBlock r sb')
+renStmt r (Loop exp sb)       = Loop (renExp r exp) (renStmtBlock r sb)
 
-renStmtBlock :: Renaming ctx ctx2 -> StmtBlock ctx -> StmtBlock ctx2
-renStmtBlock _ Empty = Empty
-renStmtBlock r (st :. sb) = renStmt r st :. renStmtBlock r sb
-renStmtBlock r (Branch exp sb sb') = Branch (renExp r exp) (renStmtBlock r sb) (renStmtBlock r sb')
+renStmtBlock :: Renaming ctx ctx2 -> StmtBlock ctx x -> StmtBlock ctx2 x
+renStmtBlock r (Return exp) = Return (renExp r exp)
+renStmtBlock _ Break        = Break
+renStmtBlock _ Empty        = Empty
+renStmtBlock r (st :. sb)   = renStmt r st :. renStmtBlock r sb
 
-weakenStmtBlock :: StmtBlock ctx -> StmtBlock (x : ctx)
+weakenStmtBlock :: StmtBlock ctx x -> StmtBlock (c : ctx) x
 weakenStmtBlock = renStmtBlock S
 
 weakenTable :: Table xs -> Table (x ': xs)

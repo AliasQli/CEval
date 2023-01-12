@@ -51,6 +51,7 @@ tokens :-
 <0> for     { tok For }
 <0> break   { tok Break }
 <0> continue{ tok Continue }
+<0> return  { tok Return }
 <0> string  { tok TypeString }
 <0> char    { tok TypeChar }
 <0> int     { tok TypeInt }
@@ -154,6 +155,7 @@ data Token
   | For
   | Break
   | Continue
+  | Return
   | TypeString
   | TypeChar
   | TypeInt
