@@ -10,10 +10,12 @@ Coursework.
 
 - Redefinition check
 
+- Break/continue scope check
+
 - Function
     
     - Definition (And global variable definition)
 
-    - Call (By reference and value) & return
+    - Call (By reference and value)
 
     - Type (`void`)

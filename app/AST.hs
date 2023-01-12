@@ -39,8 +39,15 @@ data DBType (b :: BType) where
   DString :: DBType 'BString
   DVoid   :: DBType 'BVoid
 
+instance Show (DBType b) where
+  show :: DBType b -> String
+  show DInt = "int"
+  show DFloat = "float"
+  show DChar = "char"
+  show DString = "string"
+  show DVoid = "void"
+
 deriving instance Show (Sig DBType)
-deriving instance Show (DBType b)
 
 instance DecEq BType where
   (=?=) :: DBType x -> DBType y -> Maybe (x :~: y)
@@ -64,8 +71,12 @@ data DCType (c :: CType) where
   DBType  :: DBType b -> DCType ('BType b)
   DCArray :: DCType c -> DCType ('CArray c)
 
+instance Show (DCType b) where
+  show :: DCType b -> String
+  show (DBType b) = show b
+  show (DCArray c) = show c ++ "[]"
+
 deriving instance Show (Sig DCType)
-deriving instance Show (DCType b)
 
 instance DecEq CType where
   (=?=) :: DCType x -> DCType y -> Maybe (x :~: y)
@@ -78,7 +89,10 @@ data Dim (c :: CType) where
   D0 :: Dim ('BType b)
   DS :: Int -> Dim c -> Dim ('CArray c)
 
-deriving instance Show (Dim c)
+instance Show (Dim c) where
+  show :: Dim c -> String
+  show D0 = ""
+  show (DS i d) = "[" <> show i <> "]" <> show d
 
 -- | Extract the basic type.
 type family Basic (c :: CType) :: BType where
@@ -96,8 +110,15 @@ data Var (ctx :: [CType]) (ty :: CType) where
   Z :: Var (x ': xs) x
   S :: Var xs y -> Var (x ': xs) y
 
+instance Show (Var ctx ty) where
+  show :: Var ctx ty -> String
+  show v = "<var" ++ show (go v) ++ ">"
+    where
+      go :: forall ctx x. Var ctx x -> Int
+      go Z = 0
+      go (S v) = go v + 1
+
 deriving instance Show (Sig (Var ctx))
-deriving instance Show (Var ctx ty)
 
 -- | Index of an array.
 data Ix (ctx :: [CType]) (ty :: CType) where
@@ -105,14 +126,19 @@ data Ix (ctx :: [CType]) (ty :: CType) where
   Ix :: Ix xs c -> Exp xs 'BInt -> Ix xs ('CArray c)
 
 deriving instance Show (Sig (Ix ctx))
-deriving instance Show (Ix ctx ty)
+instance Show (Ix ctx ty) where
+  show :: Ix ctx ty -> String
+  show L = ""
+  show (Ix ix exp) = "[" ++ show exp ++ "]" ++ show ix
 
 -- | A left value, /a.k.a./ fully indexed variable.
 data LeftVal (ctx :: [CType]) (ty :: BType) where
   LeftVal :: Var xs c -> Ix xs c -> LeftVal xs (Basic c)
 
 deriving instance Show (Sig (LeftVal ctx))
-deriving instance Show (LeftVal ctx ty)
+instance Show (LeftVal ctx ty) where
+  show :: LeftVal ctx ty -> String
+  show (LeftVal v ix) = show v ++ show ix
 
 -- | An expression.
 data Exp (ctx :: [CType]) (ty :: BType) where
@@ -172,8 +198,8 @@ lookupTable tbl s = case lookup s tbl of
 type Renaming ctx ctx2 = forall x. Var ctx x -> Var ctx2 x
 
 renw :: Renaming ctx ctx2 -> Var ctx2 x -> Renaming (x ': ctx) ctx2
-renw _r lv Z       = lv
-renw r _lv (S var) = r var
+renw _r v Z       = v
+renw r _v (S var) = r var
 
 wren :: Renaming ctx ctx2 -> Renaming ctx (x ': ctx2)
 wren r = S . r
