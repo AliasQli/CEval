@@ -1,5 +1,6 @@
 module Evaluator where
 
+import           AST
 import           Control.Lens               hiding (Empty)
 import           Control.Monad.State
 import           Data.ByteString.Lazy.Char8 (ByteString)
@@ -20,6 +21,7 @@ type family B (b :: BType) :: Type where
   B 'BFloat = Float
   B 'BChar = Char
   B 'BString = Text
+  B 'BVoid = ()
 
 type family C (c :: CType) :: Type where
   C ('BType b) = B b
@@ -37,6 +39,7 @@ initB DInt    = 0
 initB DFloat  = 0
 initB DChar   = '\0'
 initB DString = ""
+initB DVoid   = ()
 
 initC :: DCType c -> Dim c -> C c
 initC (DBType b) D0          = initB b

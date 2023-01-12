@@ -78,6 +78,7 @@ executable ceval
     other-modules:
         Parser
         Lexer
+        AST
         Tychecker
         Evaluator
     build-depends:    
