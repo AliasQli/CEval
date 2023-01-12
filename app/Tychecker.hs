@@ -63,11 +63,11 @@ tryCastExp DVoid (Sig _ exp)         = pure $ E2V exp
 tryCastExp b (Sig ty _)              = Left $ "Can't cast expression of type " <> show ty <> " to " <> show b <> "."
 
 formStmtBlock
-  :: Table ctx -> DBType b
+  :: Table ctx -> DBType b -> Bool
   -> [P.Stmt L.Range] -> Either String (StmtBlock ctx b)
-formStmtBlock tbl b []                              = pure Empty
-formStmtBlock tbl b (P.Defs _ _ [] : xs)            = formStmtBlock tbl b xs
-formStmtBlock tbl b (P.Defs r ty (P.Def _ les (P.Name _ txt) mExp : defs) : xs) = do
+formStmtBlock tbl b inloop []                              = pure Empty
+formStmtBlock tbl b inloop (P.Defs _ _ [] : xs)            = formStmtBlock tbl b inloop xs
+formStmtBlock tbl b inloop (P.Defs r ty (P.Def _ les (P.Name _ txt) mExp : defs) : xs) = do
   let go [] = case ty of
           P.Int ra    -> Sig (DBType DInt) D0
           P.Float ra  -> Sig (DBType DFloat) D0
@@ -76,7 +76,7 @@ formStmtBlock tbl b (P.Defs r ty (P.Def _ les (P.Name _ txt) mExp : defs) : xs) 
       go (P.Length r i : ls) = case go ls of Sig ty dim -> Sig (DCArray ty) (DS i dim)
   case go les of
     Sig ctype dim -> do
-      s <- formStmtBlock ((txt, Sig ctype Z) : weakenTable tbl) b (P.Defs r ty defs : xs)
+      s <- formStmtBlock ((txt, Sig ctype Z) : weakenTable tbl) b inloop (P.Defs r ty defs : xs)
       s' <- case mExp of
         Nothing -> pure s
         Just exp -> do
@@ -85,43 +85,51 @@ formStmtBlock tbl b (P.Defs r ty (P.Def _ les (P.Name _ txt) mExp : defs) : xs) 
             (Just Refl, Just Refl) -> pure $ Exp (EAssign (LeftVal Z L) (renExp S exp)) :. s
             _                      -> Left ""
       pure $ Def ctype dim s' :. Empty
-formStmtBlock tbl b (P.If ra exp st : xs) = do
+formStmtBlock tbl b inloop (P.If ra exp st : xs) = do
   exp <- formExp tbl exp
   exp <- tryCastExp DInt exp
-  b1 <- formStmtBlock tbl b [st]
-  xs <- formStmtBlock tbl b xs
+  b1 <- formStmtBlock tbl b inloop [st]
+  xs <- formStmtBlock tbl b inloop xs
   pure $ Branch exp b1 Empty :. xs
-formStmtBlock tbl b (P.IfElse ra exp st st' : xs) = do
+formStmtBlock tbl b inloop (P.IfElse ra exp st st' : xs) = do
   exp <- formExp tbl exp
   exp <- tryCastExp DInt exp
-  b1 <- formStmtBlock tbl b [st]
-  b2 <- formStmtBlock tbl b [st']
-  xs <- formStmtBlock tbl b xs
+  b1 <- formStmtBlock tbl b inloop [st]
+  b2 <- formStmtBlock tbl b inloop [st']
+  xs <- formStmtBlock tbl b inloop xs
   pure $ Branch exp b1 b2 :. xs
-formStmtBlock tbl b (P.While ra exp st : xs)        = do
+formStmtBlock tbl b inloop (P.While ra exp st : xs)        = do
   Sig ty exp <- formExp tbl exp
   case ty =?= DInt of
     Nothing -> Left ""
     Just Refl -> do
-      xs <- formStmtBlock tbl b xs
-      body <- formStmtBlock tbl b [st]
+      xs <- formStmtBlock tbl b inloop xs
+      body <- formStmtBlock tbl b True [st]
       pure $ Loop exp body :. xs
-formStmtBlock tbl b (P.For ra st exp exp' st' : xs) = error "TODO"
-formStmtBlock tbl b (P.Break ra : xs)               = pure Break -- TODO: Check scope
-formStmtBlock tbl b (P.Continue ra : xs)            = pure Empty
-formStmtBlock tbl b (P.Return ra mexp : _)          = do
+formStmtBlock tbl b inloop (P.For ra st exp exp' st' : xs) = error "TODO"
+formStmtBlock tbl b inloop (P.Break ra : xs)               =
+  if inloop
+    then pure Break
+    else Left ""
+formStmtBlock tbl b inloop (P.Continue ra : xs)            =
+  if inloop
+    then pure Empty
+    else Left ""
+formStmtBlock tbl b inloop (P.Return ra mexp : _)          = do
   case mexp of
     Nothing -> case b of
       DVoid -> pure $ Return EVoid
       _     -> Left ""
-    Just exp -> do
-      sexp <- formExp tbl exp
-      exp <- tryCastExp b sexp
-      pure $ Return exp
-formStmtBlock tbl b (P.Exp ra exp : xs)             = do
+    Just exp -> case b =?= DVoid of
+      Just _ -> Left ""
+      Nothing -> do
+        sexp <- formExp tbl exp
+        exp <- tryCastExp b sexp
+        pure $ Return exp
+formStmtBlock tbl b inloop (P.Exp ra exp : xs)             = do
   Sig ty exp <- formExp tbl exp
-  b <- formStmtBlock tbl b xs
+  b <- formStmtBlock tbl b inloop xs
   pure $ Exp exp :. b
-formStmtBlock tbl b (P.Block (P.StmtBlock n ys) : xs) =
-  liftA2 (<>) (formStmtBlock tbl b ys) (formStmtBlock tbl b xs)
-formStmtBlock tbl b (P.Empty ra : xs)                 = formStmtBlock tbl b xs
+formStmtBlock tbl b inloop (P.Block (P.StmtBlock n ys) : xs) =
+  liftA2 (<>) (formStmtBlock tbl b inloop ys) (formStmtBlock tbl b inloop xs)
+formStmtBlock tbl b inloop (P.Empty ra : xs)                 = formStmtBlock tbl b inloop xs

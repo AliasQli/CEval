@@ -10,8 +10,6 @@ Coursework.
 
 - Redefinition check
 
-- Break/continue scope check
-
 - Function
     
     - Definition (And global variable definition)

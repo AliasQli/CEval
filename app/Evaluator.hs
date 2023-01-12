@@ -118,7 +118,7 @@ run bs = do
   case L.runAlex bs P.parseC of
     Left e -> fail e
     Right (P.StmtBlock _ stmts) -> do
-      case formStmtBlock [] DVoid (stmts ++ [P.Return undefined Nothing]) of
+      case formStmtBlock [] DVoid False stmts of
         Left e -> fail e
         Right (s :: StmtBlock '[] 'BVoid) -> do
           runStateT (runExceptT (evalStmts s)) ()

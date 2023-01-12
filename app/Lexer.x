@@ -133,7 +133,10 @@ alexEOF = do
 data Range = Range
   { start :: AlexPosn
   , stop :: AlexPosn
-  } deriving (Eq, Show)
+  } deriving (Eq)
+
+instance Show Range where
+  show (Range (AlexPn _ l1 c1) (AlexPn _ l2 c2)) = show l1 <> ":" <> show c1 <> "-" <> show l2 <> ":" <> show c2
 
 data RangedToken = RangedToken
   { rtToken :: Token
