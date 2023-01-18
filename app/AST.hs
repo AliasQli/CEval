@@ -1,3 +1,6 @@
+{-# LANGUAGE StrictData           #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 module AST where
 
 import           Data.Kind
@@ -15,6 +18,14 @@ class DecEq d where
 
 -- | Sigma type.
 data Sig (f :: k -> Type) = forall a. Sig (Dep k a) (f a)
+
+mapSig :: (forall a. f a -> g a) -> Sig f -> Sig g
+mapSig fun (Sig dep a) = Sig dep (fun a)
+
+data Sig2 (f :: k -> k2 -> Type) = forall a b. Sig2 (Dep k a) (Dep k2 b) (f a b)
+
+mapSig2 :: (forall a b. f a b -> g a b) -> Sig2 f -> Sig2 g
+mapSig2 fun (Sig2 dep dep2 a) = Sig2 dep dep2 (fun a)
 
 -- | Functor product.
 data (:*:) f g a = f a :*: g a
@@ -41,11 +52,11 @@ data DBType (b :: BType) where
 
 instance Show (DBType b) where
   show :: DBType b -> String
-  show DInt = "int"
-  show DFloat = "float"
-  show DChar = "char"
+  show DInt    = "int"
+  show DFloat  = "float"
+  show DChar   = "char"
   show DString = "string"
-  show DVoid = "void"
+  show DVoid   = "void"
 
 deriving instance Show (Sig DBType)
 
@@ -73,7 +84,7 @@ data DCType (c :: CType) where
 
 instance Show (DCType b) where
   show :: DCType b -> String
-  show (DBType b) = show b
+  show (DBType b)  = show b
   show (DCArray c) = show c ++ "[]"
 
 deriving instance Show (Sig DCType)
@@ -84,6 +95,23 @@ instance DecEq CType where
   DCArray x =?= DCArray y = fmap (\Refl -> Refl) $ x =?= y
   _ =?= _                 = Nothing
 
+data DList a (l :: [a]) where
+  DNil :: DList a '[]
+  DCons :: Dep a x -> DList a xs -> DList a (x ': xs)
+
+type instance Dep [a] = DList a
+
+instance DecEq a => DecEq [a] where
+  (=?=) :: Dep [a] x -> Dep [a] y -> Maybe (x :~: y)
+  DNil =?= DNil                   = Just Refl
+  DCons dep dl =?= DCons dep' dl' = do
+    Refl <- dl =?= dl'
+    Refl <- dep =?= dep'
+    pure Refl
+  _ =?= _                         = Nothing
+
+deriving instance Show (DList CType xs)
+
 -- | Shape of an array.
 data Dim (c :: CType) where
   D0 :: Dim ('BType b)
@@ -91,7 +119,7 @@ data Dim (c :: CType) where
 
 instance Show (Dim c) where
   show :: Dim c -> String
-  show D0 = ""
+  show D0       = ""
   show (DS i d) = "[" <> show i <> "]" <> show d
 
 -- | Extract the basic type.
@@ -115,7 +143,7 @@ instance Show (Var ctx ty) where
   show v = "<var" ++ show (go v) ++ ">"
     where
       go :: forall ctx x. Var ctx x -> Int
-      go Z = 0
+      go Z     = 0
       go (S v) = go v + 1
 
 deriving instance Show (Sig (Var ctx))
@@ -128,7 +156,7 @@ data Ix (ctx :: [CType]) (ty :: CType) where
 deriving instance Show (Sig (Ix ctx))
 instance Show (Ix ctx ty) where
   show :: Ix ctx ty -> String
-  show L = ""
+  show L           = ""
   show (Ix ix exp) = "[" ++ show exp ++ "]" ++ show ix
 
 -- | A left value, /a.k.a./ fully indexed variable.
@@ -147,6 +175,7 @@ data Exp (ctx :: [CType]) (ty :: BType) where
   EAssign :: LeftVal xs b -> Exp xs b -> Exp xs b
   EAdd :: Exp xs 'BInt -> Exp xs 'BInt -> Exp xs 'BInt
   EPrintInt :: Exp xs 'BInt -> Exp xs 'BInt
+  ERun :: ~(StmtBlock xs x) -> Exp xs x
   EVoid :: Exp xs 'BVoid
   EI2F :: Exp xs 'BInt -> Exp xs 'BFloat
   EF2I :: Exp xs 'BFloat -> Exp xs 'BInt
@@ -164,16 +193,17 @@ data Stmt (ctx :: [CType]) (b :: BType) where
   Branch :: Exp xs 'BInt -> StmtBlock xs x -> StmtBlock xs x -> Stmt xs x
   Loop :: Exp xs 'BInt -> StmtBlock xs x -> Stmt xs x
   Def :: DCType c -> Dim c -> StmtBlock (c ': xs) x -> Stmt xs x
+  Return :: Exp xs x -> Stmt xs x
+  Break :: Stmt xs x
+  Continue :: Stmt xs x
 
 deriving instance Show (Sig (Stmt ctx))
 deriving instance Show (Stmt ctx x)
 
 -- | A statement block.
 data StmtBlock (ctx :: [CType]) (b :: BType) where
-  Return :: Exp xs x -> StmtBlock xs x
-  Break :: StmtBlock xs x
   Empty :: StmtBlock xs x
-  (:.) :: Stmt xs x -> StmtBlock xs x -> StmtBlock xs x
+  (:.) :: Stmt xs x -> ~(StmtBlock xs x) -> StmtBlock xs x
 infixr 7 :.
 
 deriving instance Show (Sig (StmtBlock ctx))
@@ -183,7 +213,37 @@ instance Semigroup (StmtBlock ctx b) where
   (<>) :: StmtBlock ctx b -> StmtBlock ctx b -> StmtBlock ctx b
   Empty <> stmts     = stmts
   sig :. sb <> stmts = sig :. (sb <> stmts)
-  s <> _             = s
+  -- s <> _             = s
+
+data Function (global :: [CType]) (args :: [CType]) (ret :: BType) where
+  Fun :: ~(StmtBlock ctx x) -> Function ctx '[] x
+  Arg :: Function ('BType a ': ctx) as x -> DBType a -> Function ctx ('BType a ': as) x
+  Ref :: Function (a ': ctx) as x -> DCType a -> Function ctx (a ': as) x
+
+deriving instance Show (Function global ctx x)
+deriving instance Show (Sig2 (Function global))
+
+data Signature (global :: [CType]) (args :: [CType]) (ret :: BType) where
+  SRet :: DBType x -> Signature ctx '[] x
+  SArg :: Signature ('BType a ': ctx) as x -> DBType a -> Signature ctx ('BType a ': as) x
+  SRef :: Signature (a ': ctx) as x -> DCType a -> Signature ctx (a ': as) x
+
+deriving instance Show (Signature global ctx x)
+deriving instance Show (Sig2 (Signature global))
+
+forceFun :: Function global ctx x -> Function global ctx x
+forceFun (Fun sb)  = Fun sb
+forceFun (Arg f b) = Arg (forceFun f) b
+forceFun (Ref f c) = Ref (forceFun f) c
+
+forceSB :: StmtBlock ctx x -> StmtBlock ctx x
+forceSB (s :. sb) = s :. forceSB sb
+forceSB Empty     = Empty
+
+-- forceExp
+type family AppendRev ctx as where
+  AppendRev ctx '[] = ctx
+  AppendRev ctx (a ': as) = AppendRev (a ': ctx) as
 
 -- | Map from variable name to its /de Bruijn/ index, used during typechecking.
 type Table ctx = [(Text, Sig (Var ctx))]
@@ -219,6 +279,7 @@ renExp _ (EInt n)         = EInt n
 renExp r (EAssign lv exp) = EAssign (renLeftVal r lv) (renExp r exp)
 renExp r (EAdd exp exp')  = EAdd (renExp r exp) (renExp r exp')
 renExp r (EPrintInt exp)  = EPrintInt (renExp r exp)
+renExp r (ERun stmts)     = ERun (renStmtBlock r stmts)
 renExp _ EVoid            = EVoid
 renExp r (EI2F exp)       = EI2F (renExp r exp)
 renExp r (EF2I exp)       = EF2I (renExp r exp)
@@ -231,15 +292,29 @@ renStmt r (Exp exp)           = Exp (renExp r exp)
 renStmt r (Def dt dim sb)     = Def dt dim (renStmtBlock (renw (wren r) Z) sb)
 renStmt r (Branch exp sb sb') = Branch (renExp r exp) (renStmtBlock r sb) (renStmtBlock r sb')
 renStmt r (Loop exp sb)       = Loop (renExp r exp) (renStmtBlock r sb)
+renStmt r (Return exp)        = Return (renExp r exp)
+renStmt _ Break               = Break
+renStmt _ Continue            = Continue
 
 renStmtBlock :: Renaming ctx ctx2 -> StmtBlock ctx x -> StmtBlock ctx2 x
-renStmtBlock r (Return exp) = Return (renExp r exp)
-renStmtBlock _ Break        = Break
-renStmtBlock _ Empty        = Empty
-renStmtBlock r (st :. sb)   = renStmt r st :. renStmtBlock r sb
+renStmtBlock _ Empty      = Empty
+renStmtBlock r (st :. sb) = renStmt r st :. renStmtBlock r sb
+
+renFunction :: Renaming ctx ctx2 -> Function ctx args x -> Function ctx2 args x
+renFunction r (Fun sb)      = Fun (renStmtBlock r sb)
+renFunction r (Arg func dt) = Arg (renFunction (renw (wren r) Z) func) dt
+renFunction r (Ref func dt) = Ref (renFunction (renw (wren r) Z) func) dt
 
 weakenStmtBlock :: StmtBlock ctx x -> StmtBlock (c : ctx) x
 weakenStmtBlock = renStmtBlock S
 
+weakenFun :: Function ctx args x -> Function (c : ctx) args x
+weakenFun = renFunction S
+
 weakenTable :: Table xs -> Table (x ': xs)
 weakenTable = fmap (fmap (\(Sig ty var) -> Sig ty (S var)))
+
+type Funs ctx = [(Text, Sig2 (Function ctx))]
+
+weakenFuns :: Funs ctx -> Funs (c ': ctx)
+weakenFuns = fmap (fmap (\(Sig2 arg ty fun) -> Sig2 arg ty (weakenFun fun)))

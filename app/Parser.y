@@ -8,12 +8,15 @@ module Parser
   , UOpMut (..)
   , BinOp (..)
   , BinOpMut (..)
+  , PassArg (..)
   , Exp (..)
   , Type (..)
   , Length (..)
   , Def (..)
   , Stmt (..)
   , StmtBlock (..)
+  , RetType (..)
+  , GlobalDef (..)
   , info
   ) where
 
@@ -56,6 +59,7 @@ import qualified Lexer as L
   'int'      { L.RangedToken L.TypeInt _ }
   'float'    { L.RangedToken L.TypeFloat _ }
   'string'   { L.RangedToken L.TypeString _ }
+  'void'     { L.RangedToken L.TypeVoid _ }
   -- Arithmetic operators
   '++'       { L.RangedToken L.PlusPlus _ }
   '--'       { L.RangedToken L.MinusMinus _ }
@@ -88,6 +92,7 @@ import qualified Lexer as L
   -- Separators
   ','        { L.RangedToken L.Comma _ }
   ';'        { L.RangedToken L.Semi _ }
+  '&'        { L.RangedToken L.Ref _ }
 
 -- %right else
 %right ','
@@ -132,6 +137,10 @@ var :: { Var L.Range }
   : name            { Var $1 }
   | var '[' exp ']' { Ix (info $1 <-> L.rtRange $4) $1 $3 }
 
+pass_arg :: { PassArg L.Range }
+  : exp       { Arg $1 }
+  | '&' name  { Ref (L.rtRange $1 <-> info $2) $2 }
+
 exp :: { Exp L.Range }
   : -- Unary operators
     '++' var                 { EUOpMut (L.rtRange $1 <-> info $2) (LInc (L.rtRange $1)) $2 }
@@ -167,7 +176,7 @@ exp :: { Exp L.Range }
   | float                    { unTok $1 (\range (L.Float x) -> EFloat range x) }
   | char                     { unTok $1 (\range (L.Char x) -> EChar range x) }
   -- Function call
-  | name '(' sepBy(exp, ',') ')' { ECall (info $1 <-> L.rtRange $4) $1 $3 }
+  | name '(' sepBy(pass_arg, ',') ')' { ECall (info $1 <-> L.rtRange $4) $1 $3 }
 
 type :: { Type L.Range }
   : 'char'   { Char (L.rtRange $1) } 
@@ -175,22 +184,22 @@ type :: { Type L.Range }
   | 'float'  { Float (L.rtRange $1) } 
   | 'string' { String (L.rtRange $1) } 
 
-assignexp :: { Exp L.Range }
+assign_exp :: { Exp L.Range }
   : '=' exp   { $2 }
 
-arraylength :: { Length L.Range }
+array_length :: { Length L.Range }
   : '[' int ']'   { unTok $2 (\range (L.Int x) -> Length range x) }
 
-assigndefault :: { Def L.Range }
-  : name many(arraylength) optional(assignexp)  { Def (info $1 <-> maybe (if null $2 then info $1 else info (last $2)) info $3) $2 $1 $3 }
+assign_default :: { Def L.Range }
+  : name many(array_length) optional(assign_exp)  { Def (info $1 <-> maybe (if null $2 then info $1 else info (last $2)) info $3) $2 $1 $3 }
 
 forfirst :: { ForFirst L.Range }
-  : type sepBy1(assigndefault, ',') ';'   { ForDefs (info $1 <-> L.rtRange $3) $1 $2 }
+  : type sepBy1(assign_default, ',') ';'  { ForDefs (info $1 <-> L.rtRange $3) $1 $2 }
   | exp ';'                               { ForExp (info $1 <-> L.rtRange $2) $1 }
   | ';'                                   { ForEmpty (L.rtRange $1) }
 
 stmt :: { Stmt L.Range }
-  : type sepBy1(assigndefault, ',') ';'   { Defs (info $1 <-> L.rtRange $3) $1 $2 }
+  : type sepBy1(assign_default, ',') ';'  { Defs (info $1 <-> L.rtRange $3) $1 $2 }
   | if '(' exp ')' stmt %shift            { If (L.rtRange $1 <-> info $5) $3 $5 }
   | if '(' exp ')' stmt else stmt         { IfElse (L.rtRange $1 <-> info $7) $3 $5 $7 }
   | while '(' exp ')' stmt                { While (L.rtRange $1 <-> info $5) $3 $5 }
@@ -206,15 +215,26 @@ stmt :: { Stmt L.Range }
 stmtblock :: { StmtBlock L.Range }
   : '{' many(stmt) '}'                    { StmtBlock (L.rtRange $1 <-> L.rtRange $3) $2 }
 
-program :: { StmtBlock L.Range }
-  : many(stmt)                            { StmtBlock (L.Range (L.AlexPn 0 1 1) (L.AlexPn 0 1 1)) $1 }
+dim :: { (Int, Maybe L.Range) }
+  :             { (0, Nothing) }
+  | dim '[' ']' { (fst $1 + 1, snd $1 <> Just (L.rtRange $3)) }
+
+arg :: { (Type L.Range, Maybe L.Range, Name L.Range, (Int, Maybe L.Range)) }
+  : type optional('&') name dim   { ($1, fmap L.rtRange $2, $3, $4) }
+
+-- Introduced solely to avoid S/R conflict
+global_help :: { Type L.Range -> GlobalDef L.Range }
+  : sepBy1(assign_default, ',') ';'           { \ty -> VarDefs (info ty <-> L.rtRange $2) ty $1 }
+  | name '(' sepBy(arg, ',') ')' stmtblock   { \ty -> Function (info ty <-> info $5) (Type ty) $1 $3 $5 }
+
+global :: { GlobalDef L.Range }
+  : type global_help                                { $2 $1 }
+  | 'void' name '(' sepBy(arg, ',') ')' stmtblock  { Function (L.rtRange $1 <-> info $6) (Void (L.rtRange $1)) $2 $4 $6 }
+
+program :: { [GlobalDef L.Range] }
+  : many(global)  { $1 }
 
 {
--- parseError :: L.RangedToken -> L.Alex a
--- parseError _ = do
---   (L.AlexPn _ line column, _, _, _) <- L.alexGetInput
---   L.alexError $ "Parse error at line " <> show line <> ", column " <> show column
-
 parseError :: (L.RangedToken, [String]) -> L.Alex a
 parseError (token, ss) = do
   (L.AlexPn _ line column, _, _, _) <- L.alexGetInput
@@ -237,6 +257,9 @@ info = fromJust . getFirst . foldMap pure
 -- Invariant: The LHS range starts before the RHS range.
 (<->) :: L.Range -> L.Range -> L.Range
 L.Range a1 _ <-> L.Range _ b2 = L.Range a1 b2
+
+instance Semigroup L.Range where
+  (<>) = (<->)
 
 -- * AST
 
@@ -289,6 +312,11 @@ data BinOpMut a
   | Assign a
   deriving (Functor, Foldable, Show)
 
+data PassArg a
+  = Arg (Exp a)
+  | Ref a (Name a)
+  deriving (Functor, Foldable, Show)
+
 -- | An expression, /a.k.a/ right value.
 data Exp a
   = EInt a Int
@@ -300,7 +328,7 @@ data Exp a
   | EUOpMut a (UOpMut a) (Var a)
   | EBinOp a (Exp a) (BinOp a) (Exp a)
   | EBinOpMut a (Var a) (BinOpMut a) (Exp a)
-  | ECall a (Name a) [Exp a]
+  | ECall a (Name a) [PassArg a]
   deriving (Functor, Foldable, Show)
 
 data Type a
@@ -342,9 +370,14 @@ data StmtBlock a
   = StmtBlock a [Stmt a]
   deriving (Functor, Foldable, Show)
 
--- data GlobalDef a
---   = VarDefs a (Type a) [Def Void a]
---   | Function a (Maybe (Type a)) (Name a) [(Type a, Name a, [Maybe (Length a)])] (StmtBlock a)
---   deriving (Functor, Foldable, Show)
+data RetType a
+  = Type (Type a)
+  | Void a
+  deriving (Functor, Foldable, Show)
+
+data GlobalDef a
+  = VarDefs a (Type a) [Def a] -- initial value ignored
+  | Function a (RetType a) (Name a) [(Type a, Maybe a, Name a, (Int, Maybe a))] (StmtBlock a)
+  deriving (Functor, Foldable, Show)
 
 }

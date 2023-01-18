@@ -56,6 +56,7 @@ tokens :-
 <0> char    { tok TypeChar }
 <0> int     { tok TypeInt }
 <0> float   { tok TypeFloat }
+<0> void    { tok TypeVoid }
 
 -- Assignment
 <0> "+="    { tok PlusAssign }
@@ -93,6 +94,7 @@ tokens :-
 -- Separators
 <0> ","     { tok Comma }
 <0> ";"     { tok Semi }
+<0> "&"     { tok Ref }
 
 -- Identifiers
 <0> @id     { tokId }
@@ -163,6 +165,7 @@ data Token
   | TypeChar
   | TypeInt
   | TypeFloat
+  | TypeVoid
   -- Arithmetic operators
   | Plus
   | Minus
@@ -198,6 +201,7 @@ data Token
   -- Separators
   | Comma
   | Semi
+  | Ref
   | EOF
   deriving (Eq, Show)
 

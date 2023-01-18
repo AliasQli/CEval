@@ -2,12 +2,10 @@ module Evaluator where
 
 import           AST
 import           Control.Lens               hiding (Empty)
-import           Control.Monad.State
 import           Control.Monad.Except
+import           Control.Monad.State
 import           Data.ByteString.Lazy.Char8 (ByteString)
 import           Data.Functor
-import           Data.Kind
-import           Data.Text                  (Text)
 import           Data.Vector                (Vector)
 import qualified Data.Vector                as V
 import qualified Data.Vector.Mutable        as MV
@@ -17,34 +15,8 @@ import           Tychecker
 
 newtype Len s a = Len (Lens' s a)
 
-type family B (b :: BType) :: Type where
-  B 'BInt = Int
-  B 'BFloat = Float
-  B 'BChar = Char
-  B 'BString = Text
-  B 'BVoid = ()
-
-type family C (c :: CType) :: Type where
-  C ('BType b) = B b
-  C ('CArray c) = Vector (C c)
-
-type family Ctx (ctx :: [CType]) :: Type where
-  Ctx '[] = ()
-  Ctx (c ': cs) = (C c, Ctx cs)
-
 vectorIx :: Int -> Lens' (Vector a) a
 vectorIx i = lens (V.! i) (\v a -> V.modify (\mv -> MV.write mv i a) v)
-
-initB :: DBType b -> B b
-initB DInt    = 0
-initB DFloat  = 0
-initB DChar   = '\0'
-initB DString = ""
-initB DVoid   = ()
-
-initC :: DCType c -> Dim c -> C c
-initC (DBType b) D0          = initB b
-initC (DCArray c) (DS n dim) = V.replicate n (initC c dim)
 
 evalVar :: Var ctx c -> Lens' (Ctx ctx) (C c)
 evalVar Z       = _1
@@ -80,6 +52,7 @@ evalExp (EPrintInt exp) = do
   exp <- evalExp exp
   liftIO $ print exp
   pure exp
+evalExp (ERun stmts) = evalStmtsAsFun stmts
 evalExp EVoid = pure ()
 evalExp (EI2F exp) = fmap fromIntegral $ evalExp exp
 evalExp (EF2I exp) = fmap round $ evalExp exp
@@ -87,8 +60,10 @@ evalExp (EI2C exp) = fmap toEnum $ evalExp exp
 evalExp (EC2I exp) = fmap fromEnum $ evalExp exp
 evalExp (E2V exp)  = evalExp exp $> ()
 
-evalStmt :: Stmt ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Bool
-evalStmt (Exp exp) = lift (evalExp exp) $> False
+data Next = B | C | N deriving Eq
+
+evalStmt :: Stmt ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Next
+evalStmt (Exp exp) = lift (evalExp exp) $> N
 evalStmt (Branch exp sb sb') = do
   cond <- lift $ evalExp exp
   if cond /= 0
@@ -99,27 +74,57 @@ evalStmt (Loop exp sb) = do
   if cond /= 0
     then do
       break <- evalStmts sb
-      if break
-        then pure False
+      if break == B
+        then pure N
         else evalStmt (Loop exp sb)
-    else pure False
+    else pure N
 evalStmt (Def dt dim sb) = mapExceptT (\(StateT f) -> StateT $ fmap (fmap snd) . f . (initC dt dim,)) (evalStmts sb)
+evalStmt (Return exp) = lift (evalExp exp) >>= throwError
+evalStmt Break        = pure B
+evalStmt Continue     = pure C
 
-evalStmts :: StmtBlock ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Bool
-evalStmts (Return exp) = lift (evalExp exp) >>= throwError
-evalStmts Break        = pure True
-evalStmts Empty        = pure False
-evalStmts (st :. sb)   = evalStmt st >> evalStmts sb
+evalStmts :: StmtBlock ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Next
+evalStmts Empty      = pure N
+evalStmts (st :. sb) = do
+  next <- evalStmt st
+  case next of 
+    B -> pure B
+    C -> pure C
+    N -> evalStmts sb
+
+evalStmtsAsFun :: StmtBlock ctx x -> StateT (Ctx ctx) IO (B x)
+evalStmtsAsFun stmts = do
+  eth <- runExceptT $ evalStmts stmts
+  case eth of
+    Left b  -> pure b
+    Right _ -> error "IMPOSSIBLE"
 
 -- * Tests
+
+disp :: ByteString -> IO ()
+disp bs = do
+  case L.runAlex bs P.parseC of
+    Left e -> fail e
+    Right gDefs -> do
+      case formProgram gDefs of
+        Identity (Program _ _ funs) -> case lookup "main" funs of
+          Nothing -> fail "main function not found"
+          Just (Sig2 DNil DVoid (Fun sb)) -> do
+            print sb
+            pure ()
+          Just _ -> fail "main function type incorrect"
 
 run :: ByteString -> IO ()
 run bs = do
   case L.runAlex bs P.parseC of
     Left e -> fail e
-    Right (P.StmtBlock _ stmts) -> do
-      case formStmtBlock [] DVoid False stmts of
-        Left e -> fail e
-        Right (s :: StmtBlock '[] 'BVoid) -> do
-          runStateT (runExceptT (evalStmts s)) ()
-          pure ()
+    Right gDefs -> do
+      case formProgram gDefs of
+        Identity (Program _ ctx funs) -> case lookup "main" funs of
+          Nothing -> fail "main function not found"
+          Just (Sig2 DNil DVoid (Fun sb)) -> do
+            let fsb = forceSB sb
+            fsb `seq` putStrLn "-----------"
+            runStateT (evalStmtsAsFun sb) ctx
+            pure ()
+          Just _ -> fail "main function type incorrect"
