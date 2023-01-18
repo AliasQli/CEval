@@ -38,26 +38,96 @@ formVarIx tbl funs ixf (P.Ix ra var exp) = do
 
 formExp :: Table ctx -> [(Text, Sig2 (Function ctx))] -> P.Exp R -> Identity (Sig (Exp ctx))
 formExp tbl funs (P.EInt ra r) = pure $ Sig DInt (EInt r)
+formExp tbl funs (P.EFloat ra r) = pure $ Sig DFloat (EFloat r)
+formExp tbl funs (P.EString ra r) = pure $ Sig DString (EString r)
+formExp tbl funs (P.EChar ra r) = pure $ Sig DChar (EChar r)
 formExp tbl funs (P.EVar n var) = do
   Sig ty l <- formVarIx tbl funs (\bty -> Help (DBType bty) L n) var
   pure $ Sig ty (Var l)
-formExp tbl funs (P.EBinOp ra exp (P.Plus n) exp2) = do -- Subject to change
-  Sig ty exp <- formExp tbl funs exp
-  Sig ty2 exp2 <- formExp tbl funs exp2
-  case (ty =?= DInt, ty2 =?= DInt) of
-    (Just Refl, Just Refl) -> pure $ Sig DInt (EAdd exp exp2)
-    (_, _)                 -> error ""
-formExp tbl funs (P.EBinOpMut r var (P.Assign n) exp) = do
+formExp tbl funs (P.EBinOp ra exp op exp2) = do
+  exp <- formExp tbl funs exp
+  exp2 <- formExp tbl funs exp2
+  Sig ty (exp :*: exp2) <- unifyExp exp exp2 ra
+  case op of
+    P.Plus ra'   -> pure $ Sig ty (EArith ty Add exp exp2)
+    P.Minus ra'  -> pure $ Sig ty (EArith ty Sub exp exp2)
+    P.Times ra'  -> pure $ Sig ty (EArith ty Mul exp exp2)
+    P.Divide ra' -> pure $ Sig ty (EArith ty Div exp exp2)
+    P.Eq ra'     -> pure $ Sig DInt (ECmp ty Eq exp exp2)
+    P.Neq ra'    -> pure $ Sig DInt (ECmp ty Ne exp exp2)
+    P.Lt ra'     -> pure $ Sig DInt (ECmp ty Lt exp exp2)
+    P.Le ra'     -> pure $ Sig DInt (ECmp ty Le exp exp2)
+    P.Gt ra'     -> pure $ Sig DInt (ECmp ty Gt exp exp2)
+    P.Ge ra'     -> pure $ Sig DInt (ECmp ty Ge exp exp2)
+    P.Mod ra'    -> case ty of
+      DInt  -> pure $ Sig DInt (EMod exp exp2)
+      DChar -> pure $ Sig DInt (EMod (EC2I exp) (EC2I exp2))
+      _     -> error $ "Expecting integral expression in modulo" <> errorAt ra
+formExp tbl funs (P.EBinOpMut r var op exp) = do
   Sig ty l <- formVarIx tbl funs (\bty -> Help (DBType bty) L r) var
-  Sig ty2 exp <- formExp tbl funs exp
-  case ty =?= ty2 of
-    Nothing   -> error ""
-    Just Refl -> pure $ Sig ty (EAssign l exp)
-formExp tbl funs (P.ECall _ (P.Name _ "print") [P.Arg exp]) = do
-  Sig ty exp <- formExp tbl funs exp
-  case ty =?= DInt of
-    Nothing   -> error ""
-    Just Refl -> pure $ Sig DInt (EPrintInt exp)
+  val <- formExp tbl funs exp
+  val <- tryCastExp ty val (P.info exp)
+  let canArith :: DBType b -> Bool
+      canArith DInt   = True
+      canArith DFloat = True
+      canArith DChar  = True
+      canArith _      = False
+  case op of
+    P.Assign ra -> pure $ Sig ty (EAssign l val)
+    P.PlusAssign ra -> do
+      unless (canArith ty) $ error $ "Can't perform arithmetic operation on a left value of type '" <> show ty <> "'" <> errorIn var
+      pure $ Sig ty (EAssign l (EArith ty Add (Var l) val))
+    P.MinusAssign ra -> do
+      unless (canArith ty) $ error $ "Can't perform arithmetic operation on a left value of type '" <> show ty <> "'" <> errorIn var
+      pure $ Sig ty (EAssign l (EArith ty Sub (Var l) val))
+    P.TimesAssign ra -> do
+      unless (canArith ty) $ error $ "Can't perform arithmetic operation on a left value of type '" <> show ty <> "'" <> errorIn var
+      pure $ Sig ty (EAssign l (EArith ty Mul (Var l) val))
+    P.DivideAssign ra -> do
+      unless (canArith ty) $ error $ "Can't perform arithmetic operation on a left value of type '" <> show ty <> "'" <> errorIn var
+      pure $ Sig ty (EAssign l (EArith ty Div (Var l) val))
+    P.ModAssign ra -> case ty =?= DInt of
+      Nothing -> error $ "Expecting integral expression in modulo" <> errorIn exp
+      Just Refl -> pure $ Sig ty (EAssign l (EMod (Var l) val))
+formExp tbl funs (P.EUOp ra (P.Negate _) exp) = do
+  Sig ty val <- formExp tbl funs exp
+  case ty of
+    DInt    -> pure $ Sig DInt (EArith DInt Sub (EInt 0) val)
+    DFloat  -> pure $ Sig DFloat (EArith DFloat Sub (EFloat 0) val)
+    DChar   -> pure $ Sig DInt (EArith DInt Sub (EInt 0) (EC2I val))
+    _       -> error $ "Can't negate an expression of type '" <> show ty <> "'" <> errorIn exp
+formExp tbl funs (P.EUOpMut ra op var) = do
+  Sig (ty :: DBType a) l <- formVarIx tbl funs (\bty -> Help (DBType bty) L ra) var
+  let one :: Exp _ a = case ty of
+        DInt   -> EInt 0
+        DFloat -> EFloat 0
+        DChar  -> EChar '\0'
+        _      -> error $ "Can't perform arithmetic operation on a left value of type '" <> show ty <> "'" <> errorIn var
+  case op of
+    P.LInc ra' -> pure $ Sig ty (EAssign l (EArith ty Add (Var l) one))
+    P.RInc ra' -> pure $ Sig ty (ERetAssign l (EArith ty Add (Var l) one))
+    P.LDec ra' -> pure $ Sig ty (EAssign l (EArith ty Sub (Var l) one))
+    P.RDec ra' -> pure $ Sig ty (ERetAssign l (EArith ty Sub (Var l) one))
+formExp tbl funs (P.ECall r (P.Name _ "print") args) = case args of
+  [P.Arg arg] -> do
+    Sig ty exp <- formExp tbl funs arg
+    case ty =?= DVoid of
+      Nothing   -> pure $ Sig ty (EPrint ty exp)
+      Just Refl -> error $ "Can't print a value of type void" <> errorAt (P.info arg)
+  [P.Ref{}]   -> error $ "Passing a reference, but the function is expecting an expression" <> errorAt r
+  _           -> error $ "Argument number mismatch, expecting 1" <> errorAt r
+formExp tbl funs (P.ECall r (P.Name _ "readInt") args) = do
+  unless (null args) $ error $ "Argument number mismatch, expecting 0" <> errorAt r
+  pure $ Sig DInt (ERead DInt)
+formExp tbl funs (P.ECall r (P.Name _ "readFloat") args) = do
+  unless (null args) $ error $ "Argument number mismatch, expecting 0" <> errorAt r
+  pure $ Sig DFloat (ERead DFloat)
+formExp tbl funs (P.ECall r (P.Name _ "readChar") args) = do
+  unless (null args) $ error $ "Argument number mismatch, expecting 0" <> errorAt r
+  pure $ Sig DChar (ERead DChar)
+formExp tbl funs (P.ECall r (P.Name _ "readString") args) = do
+  unless (null args) $ error $ "Argument number mismatch, expecting 0" <> errorAt r
+  pure $ Sig DString (ERead DString)
 formExp tbl funs (P.ECall r (P.Name ra name) args) = case lookup name funs of
   Nothing -> error $ "Calling an undefined function '" <> show name <> "'" <> errorAt ra
   Just (Sig2 argType (retType :: DBType ret) fun) -> Sig retType . ERun <$> go tbl funs argType fun args
@@ -83,7 +153,20 @@ formExp tbl funs (P.ECall r (P.Name ra name) args) = case lookup name funs of
       go tbl funs argType (Ref func ctype) (P.Arg exp : _) =
         error $ "Passing an expression, but the function is expecting a reference" <> errorIn exp
       go tbl funs _ _ _                                         = error $ "Argument number mismatch" <> errorAt r
-formExp _ _ _ = error "TODO"
+
+unifyExp :: Sig (Exp ctx) -> Sig (Exp ctx) -> R -> Identity (Sig (Exp ctx :*: Exp ctx))
+unifyExp (Sig DInt exp) (Sig DInt exp2)   r = pure $ Sig DInt (exp :*: exp2)
+unifyExp (Sig DInt exp) (Sig DFloat exp2) r = pure $ Sig DFloat (EI2F exp :*: exp2)
+unifyExp (Sig DInt exp) (Sig DChar exp2)  r = pure $ Sig DInt (exp :*: EC2I exp2)
+unifyExp (Sig DFloat exp) (Sig DInt exp2) r = pure $ Sig DFloat (exp :*: EI2F exp2)
+unifyExp (Sig DFloat exp) (Sig DFloat exp2) r = pure $ Sig DFloat (exp :*: exp2)
+unifyExp (Sig DFloat exp) (Sig DChar exp2) r = pure $ Sig DFloat (exp :*: EI2F (EC2I exp2))
+unifyExp (Sig DChar exp) (Sig DInt exp2) r = pure $ Sig DInt (EC2I exp :*: exp2)
+unifyExp (Sig DChar exp) (Sig DFloat exp2) r = pure $ Sig DFloat (EI2F (EC2I exp) :*: exp2)
+unifyExp (Sig DChar exp) (Sig DChar exp2) r = pure $ Sig DChar (exp :*: exp2)
+unifyExp (Sig DString exp) (Sig DString exp2) r = pure $ Sig DString (exp :*: exp2)
+unifyExp (Sig ty _) (Sig ty2 _)           r =
+  error $ "Can't unify '" <> show ty <> "' and '" <> show ty2 <> "' in an arithmetic expression" <> errorAt r
 
 tryCastExp :: DBType b -> Sig (Exp ctx) -> R -> Identity (Exp ctx b)
 tryCastExp DInt (Sig DInt exp)       r = pure exp
@@ -142,12 +225,7 @@ formStmtBlock tbl funs b inloop (P.Defs _ ty (P.Def r les (P.Name _ txt) mExp : 
           defVal <- tryCastExp (basic ctype) defVal (P.info exp)
           pure $ Exp (EAssign (LeftVal Z L) (renExp S defVal)) :. s
   pure $ Def ctype dim s' :. Empty
-formStmtBlock tbl funs b inloop (P.If ra exp st : xs) = do
-  cond <- formExp tbl funs exp
-  cond <- tryCastExp DInt cond (P.info exp)
-  b1 <- formStmtBlock tbl funs b inloop [st]
-  xs <- formStmtBlock tbl funs b inloop xs
-  pure $ Branch cond b1 Empty :. xs
+formStmtBlock tbl funs b inloop (P.If ra exp st : xs) = formStmtBlock tbl funs b inloop (P.IfElse ra exp st (P.Empty undefined) : xs)
 formStmtBlock tbl funs b inloop (P.IfElse ra exp st st' : xs) = do
   cond <- formExp tbl funs exp
   cond <- tryCastExp DInt cond (P.info exp)
@@ -155,13 +233,20 @@ formStmtBlock tbl funs b inloop (P.IfElse ra exp st st' : xs) = do
   b2 <- formStmtBlock tbl funs b inloop [st']
   xs <- formStmtBlock tbl funs b inloop xs
   pure $ Branch cond b1 b2 :. xs
-formStmtBlock tbl funs b inloop (P.While ra exp st : xs)        = do
+formStmtBlock tbl funs b inloop (P.While ra exp sts : xs) = do
   cond <- formExp tbl funs exp
   cond <- tryCastExp DInt cond (P.info exp)
   xs <- formStmtBlock tbl funs b inloop xs
-  body <- formStmtBlock tbl funs b True [st]
+  body <- formStmtBlock tbl funs b True sts
   pure $ Loop cond body :. xs
-formStmtBlock tbl funs b inloop (P.For ra st exp exp' st' : xs) = error "TODO"
+formStmtBlock tbl funs b inloop (P.For ra (P.ForEmpty _) cond step st : xs) = 
+  formStmtBlock tbl funs b inloop (P.While ra cond [st, P.Exp (P.info step) step] : xs)
+formStmtBlock tbl funs b inloop (P.For ra (P.ForExp _ first) cond step st : xs) = do
+  Sig _ first <- formExp tbl funs first
+  b <- formStmtBlock tbl funs b inloop (P.While ra cond [st, P.Exp (P.info step) step] : xs)
+  pure $ Exp first :. b
+formStmtBlock tbl funs b inloop (P.For ra (P.ForDefs r ty defs) cond step st : xs) = 
+  formStmtBlock tbl funs b inloop (P.Block (P.StmtBlock undefined [P.Defs r ty defs, P.While ra cond [st, P.Exp (P.info step) step]]) : xs)
 formStmtBlock tbl funs b inloop (P.Break ra : xs)               =
   if inloop
     then do
@@ -240,14 +325,19 @@ initC (DCArray c) (DS n dim) = V.replicate n (initC c dim)
 
 data CtxTable ctx = CtxTable (Ctx ctx) (Table ctx)
 
-data Program = forall global. Program (Dep [CType] global) (Ctx global) [(Text, Sig2 (Function global))]
+data Program = forall global. Program (Ctx global) (StmtBlock global 'BVoid)
 
 formProgram :: [P.GlobalDef R] -> Identity Program
 formProgram defs = do
   let (gDefs, fs) = go defs
   Sig ctype (CtxTable ctx tbl) <- globalVar gDefs
   rec funs <- traverse (formFunction tbl funs) fs
-  pure $ Program ctype ctx funs
+  let seqAll []                         = id
+      seqAll ((_, Sig2 _ _ fun) : funs) = seqAll funs . seq (forceFun fun)
+  seqAll funs $ case lookup "main" funs of
+    Nothing -> error $ "No main function"
+    Just (Sig2 DNil DVoid (Fun main)) -> pure $ Program ctx main
+    Just _ -> error $ "Main function should not have arguments and should return void"
   where
     go :: [P.GlobalDef R] -> ([(R, P.Name R, P.Type R, [P.Length R], Maybe (P.Exp R))], [P.GlobalDef R])
     go = foldr f ([], [])
@@ -282,4 +372,4 @@ formProgram defs = do
           (name, Sig2 args ret fun) <- formFunction ((argName, Sig (DBType btype) Z) : weakenTable tbl) (weakenFuns funs) (P.Function ra rt na args sb)
           let x = (name, Sig2 (DCons (DBType btype) args) ret (Arg fun btype))
           pure x
-    -- TODO: Multiple definition, main function
+    -- TODO: Multiple definition

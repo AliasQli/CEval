@@ -6,6 +6,7 @@ import           Control.Monad.Except
 import           Control.Monad.State
 import           Data.ByteString.Lazy.Char8 (ByteString)
 import           Data.Functor
+import qualified Data.Text.IO               as T
 import           Data.Vector                (Vector)
 import qualified Data.Vector                as V
 import qualified Data.Vector.Mutable        as MV
@@ -39,19 +40,94 @@ evalExp (Var lv) = do
   Len lens <- evalLeftVal lv
   use lens
 evalExp (EInt n) = pure n
+evalExp (EFloat n) = pure n
+evalExp (EChar n) = pure n
+evalExp (EString n) = pure n
 evalExp (EAssign lv exp) = do
   Len lens <- evalLeftVal lv
   val <- evalExp exp
   lens .= val
   pure val
-evalExp (EAdd exp exp2) = do
+evalExp (ERetAssign lv exp) = do
+  Len lens <- evalLeftVal lv
+  ret <- use lens
+  val <- evalExp exp
+  lens .= val
+  pure ret
+evalExp (EArith ty op exp exp2) = do
   exp <- evalExp exp
   exp2 <- evalExp exp2
-  pure (exp + exp2)
-evalExp (EPrintInt exp) = do
+  pure $ case ty of
+    DInt -> case op of
+      Add -> exp + exp2
+      Sub -> exp - exp2
+      Mul -> exp * exp2
+      Div -> exp `div` exp2
+    DFloat -> case op of
+      Add -> exp + exp2
+      Sub -> exp - exp2
+      Mul -> exp * exp2
+      Div -> exp / exp2
+    DChar -> case op of
+      Add -> toEnum $ fromEnum exp + fromEnum exp2
+      Sub -> toEnum $ fromEnum exp - fromEnum exp2
+      Mul -> toEnum $ fromEnum exp * fromEnum exp2
+      Div -> toEnum $ fromEnum exp `div` fromEnum exp2
+    DString -> error "IMPOSSIBLE"
+    DVoid -> error "IMPOSSIBLE"
+evalExp (ECmp ty op exp exp2) = do
   exp <- evalExp exp
-  liftIO $ print exp
+  exp2 <- evalExp exp2
+  pure $ case ty of
+    DInt -> case op of
+      Eq -> fromEnum $ exp == exp2
+      Ne -> fromEnum $ exp /= exp2
+      Gt -> fromEnum $ exp > exp2
+      Lt -> fromEnum $ exp < exp2
+      Ge -> fromEnum $ exp >= exp2
+      Le -> fromEnum $ exp <= exp2
+    DFloat -> case op of
+      Eq -> fromEnum $ exp == exp2
+      Ne -> fromEnum $ exp /= exp2
+      Gt -> fromEnum $ exp > exp2
+      Lt -> fromEnum $ exp < exp2
+      Ge -> fromEnum $ exp >= exp2
+      Le -> fromEnum $ exp <= exp2
+    DChar -> case op of
+      Eq -> fromEnum $ exp == exp2
+      Ne -> fromEnum $ exp /= exp2
+      Gt -> fromEnum $ exp > exp2
+      Lt -> fromEnum $ exp < exp2
+      Ge -> fromEnum $ exp >= exp2
+      Le -> fromEnum $ exp <= exp2
+    DString -> case op of
+      Eq -> fromEnum $ exp == exp2
+      Ne -> fromEnum $ exp /= exp2
+      Gt -> fromEnum $ exp > exp2
+      Lt -> fromEnum $ exp < exp2
+      Ge -> fromEnum $ exp >= exp2
+      Le -> fromEnum $ exp <= exp2
+    DVoid -> error "IMPOSSIBLE"
+evalExp (EMod exp exp2) = do
+  exp <- evalExp exp
+  exp2 <- evalExp exp2
+  pure (exp `mod` exp2)
+evalExp (EPrint b exp) = do
+  exp <- evalExp exp
+  () <- case b of
+    DInt    -> liftIO $ print exp
+    DFloat  -> liftIO $ print exp
+    DChar   -> liftIO $ print exp
+    DString -> liftIO $ print exp
+    DVoid   -> liftIO $ print exp
   pure exp
+evalExp (ERead b) = do
+  case b of
+    DInt    -> liftIO readLn
+    DFloat  -> liftIO readLn
+    DChar   -> liftIO readLn
+    DString -> liftIO T.getLine
+    DVoid   -> pure ()
 evalExp (ERun stmts) = evalStmtsAsFun stmts
 evalExp EVoid = pure ()
 evalExp (EI2F exp) = fmap fromIntegral $ evalExp exp
@@ -59,6 +135,7 @@ evalExp (EF2I exp) = fmap round $ evalExp exp
 evalExp (EI2C exp) = fmap toEnum $ evalExp exp
 evalExp (EC2I exp) = fmap fromEnum $ evalExp exp
 evalExp (E2V exp)  = evalExp exp $> ()
+evalExp (exp :& exp2)  = evalExp exp >> evalExp exp2
 
 data Next = B | C | N deriving Eq
 
@@ -87,7 +164,7 @@ evalStmts :: StmtBlock ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Next
 evalStmts Empty      = pure N
 evalStmts (st :. sb) = do
   next <- evalStmt st
-  case next of 
+  case next of
     B -> pure B
     C -> pure C
     N -> evalStmts sb
@@ -101,30 +178,12 @@ evalStmtsAsFun stmts = do
 
 -- * Tests
 
-disp :: ByteString -> IO ()
-disp bs = do
-  case L.runAlex bs P.parseC of
-    Left e -> fail e
-    Right gDefs -> do
-      case formProgram gDefs of
-        Identity (Program _ _ funs) -> case lookup "main" funs of
-          Nothing -> fail "main function not found"
-          Just (Sig2 DNil DVoid (Fun sb)) -> do
-            print sb
-            pure ()
-          Just _ -> fail "main function type incorrect"
-
 run :: ByteString -> IO ()
 run bs = do
   case L.runAlex bs P.parseC of
     Left e -> fail e
     Right gDefs -> do
       case formProgram gDefs of
-        Identity (Program _ ctx funs) -> case lookup "main" funs of
-          Nothing -> fail "main function not found"
-          Just (Sig2 DNil DVoid (Fun sb)) -> do
-            let fsb = forceSB sb
-            fsb `seq` putStrLn "-----------"
-            runStateT (evalStmtsAsFun sb) ctx
-            pure ()
-          Just _ -> fail "main function type incorrect"
+        Identity (Program ctx main) -> do
+          runStateT (evalStmtsAsFun main) ctx
+          pure ()

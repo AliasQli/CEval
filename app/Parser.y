@@ -14,6 +14,7 @@ module Parser
   , Length (..)
   , Def (..)
   , Stmt (..)
+  , ForFirst (..)
   , StmtBlock (..)
   , RetType (..)
   , GlobalDef (..)
@@ -202,7 +203,7 @@ stmt :: { Stmt L.Range }
   : type sepBy1(assign_default, ',') ';'  { Defs (info $1 <-> L.rtRange $3) $1 $2 }
   | if '(' exp ')' stmt %shift            { If (L.rtRange $1 <-> info $5) $3 $5 }
   | if '(' exp ')' stmt else stmt         { IfElse (L.rtRange $1 <-> info $7) $3 $5 $7 }
-  | while '(' exp ')' stmt                { While (L.rtRange $1 <-> info $5) $3 $5 }
+  | while '(' exp ')' stmt                { While (L.rtRange $1 <-> info $5) $3 [$5] }
   | for '(' forfirst exp ';' exp ')' stmt { For (L.rtRange $1 <-> info $8) $3 $4 $6 $8 }
   | break ';'                             { Break (L.rtRange $1 <-> L.rtRange $2) }
   | continue ';'                          { Continue (L.rtRange $1 <-> L.rtRange $2) }
@@ -356,7 +357,7 @@ data Stmt a
   = Defs a (Type a) [Def a]
   | If a (Exp a) (Stmt a)
   | IfElse a (Exp a) (Stmt a) (Stmt a)
-  | While a (Exp a) (Stmt a)
+  | While a (Exp a) [Stmt a]
   | For a (ForFirst a) (Exp a) (Exp a) (Stmt a)
   | Break a
   | Continue a

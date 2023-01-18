@@ -6,11 +6,13 @@ Coursework.
 
 ### TODO
 
-- More operators
+- More operators (Done)
 
 - Redefinition check
 
-- Main function check
+- Main function check (Done)
+
+- Const expression
 
 - Function (Done)
     

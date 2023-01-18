@@ -168,21 +168,42 @@ instance Show (LeftVal ctx ty) where
   show :: LeftVal ctx ty -> String
   show (LeftVal v ix) = show v ++ show ix
 
+data Arith = Add | Sub | Mul | Div
+  deriving (Eq, Show)
+
+data Cmp = Eq | Ne | Gt | Lt | Ge | Le
+  deriving (Eq, Show)
+
 -- | An expression.
 data Exp (ctx :: [CType]) (ty :: BType) where
   Var :: LeftVal xs b -> Exp xs b
+  -- Const
   EInt :: Int -> Exp xs 'BInt
-  EAssign :: LeftVal xs b -> Exp xs b -> Exp xs b
-  EAdd :: Exp xs 'BInt -> Exp xs 'BInt -> Exp xs 'BInt
-  EPrintInt :: Exp xs 'BInt -> Exp xs 'BInt
-  ERun :: ~(StmtBlock xs x) -> Exp xs x
+  EFloat :: Float -> Exp xs 'BFloat
+  EChar :: Char -> Exp xs 'BChar
+  EString :: Text -> Exp xs 'BString
   EVoid :: Exp xs 'BVoid
+  -- Arith
+  EArith :: DBType b -> Arith -> Exp xs b -> Exp xs b -> Exp xs b
+  EMod :: Exp xs 'BInt -> Exp xs 'BInt -> Exp xs 'BInt
+  -- Cmp
+  ECmp :: DBType b -> Cmp -> Exp xs b -> Exp xs b -> Exp xs 'BInt
+  -- Assign
+  EAssign :: LeftVal xs b -> Exp xs b -> Exp xs b
+  ERetAssign :: LeftVal xs b -> Exp xs b -> Exp xs b
+  -- Prim call
+  EPrint :: DBType b -> Exp xs b -> Exp xs b
+  ERead :: DBType b -> Exp xs b
+  -- Call
+  ERun :: ~(StmtBlock xs x) -> Exp xs x
+  -- Cast
   EI2F :: Exp xs 'BInt -> Exp xs 'BFloat
   EF2I :: Exp xs 'BFloat -> Exp xs 'BInt
   EI2C :: Exp xs 'BInt -> Exp xs 'BChar
   EC2I :: Exp xs 'BChar -> Exp xs 'BInt
   E2V :: Exp xs x -> Exp xs 'BVoid
-  -- And more
+  -- Comma
+  (:&) :: Exp xs x -> Exp xs y -> Exp xs y
 
 deriving instance Show (Sig (Exp ctx))
 deriving instance Show (Exp ctx ty)
@@ -213,7 +234,6 @@ instance Semigroup (StmtBlock ctx b) where
   (<>) :: StmtBlock ctx b -> StmtBlock ctx b -> StmtBlock ctx b
   Empty <> stmts     = stmts
   sig :. sb <> stmts = sig :. (sb <> stmts)
-  -- s <> _             = s
 
 data Function (global :: [CType]) (args :: [CType]) (ret :: BType) where
   Fun :: ~(StmtBlock ctx x) -> Function ctx '[] x
@@ -223,22 +243,14 @@ data Function (global :: [CType]) (args :: [CType]) (ret :: BType) where
 deriving instance Show (Function global ctx x)
 deriving instance Show (Sig2 (Function global))
 
-data Signature (global :: [CType]) (args :: [CType]) (ret :: BType) where
-  SRet :: DBType x -> Signature ctx '[] x
-  SArg :: Signature ('BType a ': ctx) as x -> DBType a -> Signature ctx ('BType a ': as) x
-  SRef :: Signature (a ': ctx) as x -> DCType a -> Signature ctx (a ': as) x
+forceFun :: Function global ctx x -> ()
+forceFun (Fun sb)  = forceSB sb
+forceFun (Arg f _) = forceFun f
+forceFun (Ref f _) = forceFun f
 
-deriving instance Show (Signature global ctx x)
-deriving instance Show (Sig2 (Signature global))
-
-forceFun :: Function global ctx x -> Function global ctx x
-forceFun (Fun sb)  = Fun sb
-forceFun (Arg f b) = Arg (forceFun f) b
-forceFun (Ref f c) = Ref (forceFun f) c
-
-forceSB :: StmtBlock ctx x -> StmtBlock ctx x
-forceSB (s :. sb) = s :. forceSB sb
-forceSB Empty     = Empty
+forceSB :: StmtBlock ctx x -> ()
+forceSB (_ :. sb) = forceSB sb
+forceSB Empty     = ()
 
 -- forceExp
 type family AppendRev ctx as where
@@ -274,18 +286,26 @@ renLeftVal :: Renaming ctx ctx2 -> LeftVal ctx x -> LeftVal ctx2 x
 renLeftVal r (LeftVal var ix) = LeftVal (r var) (renIx r ix)
 
 renExp :: Renaming ctx ctx2 -> Exp ctx x -> Exp ctx2 x
-renExp r (Var lv)         = Var (renLeftVal r lv)
-renExp _ (EInt n)         = EInt n
-renExp r (EAssign lv exp) = EAssign (renLeftVal r lv) (renExp r exp)
-renExp r (EAdd exp exp')  = EAdd (renExp r exp) (renExp r exp')
-renExp r (EPrintInt exp)  = EPrintInt (renExp r exp)
-renExp r (ERun stmts)     = ERun (renStmtBlock r stmts)
-renExp _ EVoid            = EVoid
-renExp r (EI2F exp)       = EI2F (renExp r exp)
-renExp r (EF2I exp)       = EF2I (renExp r exp)
-renExp r (EI2C exp)       = EI2C (renExp r exp)
-renExp r (EC2I exp)       = EC2I (renExp r exp)
-renExp r (E2V exp)        = E2V (renExp r exp)
+renExp r (Var lv)              = Var (renLeftVal r lv)
+renExp _ (EInt n)              = EInt n
+renExp _ (EFloat n)            = EFloat n
+renExp _ (EChar n)             = EChar n
+renExp _ (EString n)           = EString n
+renExp r (EAssign lv exp)      = EAssign (renLeftVal r lv) (renExp r exp)
+renExp r (ERetAssign lv exp)   = ERetAssign (renLeftVal r lv) (renExp r exp)
+renExp r (EArith a b exp exp') = EArith a b (renExp r exp) (renExp r exp')
+renExp r (EMod exp exp')       = EMod (renExp r exp) (renExp r exp')
+renExp r (ECmp a b exp exp')   = ECmp a b (renExp r exp) (renExp r exp')
+renExp r (EPrint b exp)        = EPrint b (renExp r exp)
+renExp _ (ERead b)             = ERead b
+renExp r (ERun stmts)          = ERun (renStmtBlock r stmts)
+renExp _ EVoid                 = EVoid
+renExp r (EI2F exp)            = EI2F (renExp r exp)
+renExp r (EF2I exp)            = EF2I (renExp r exp)
+renExp r (EI2C exp)            = EI2C (renExp r exp)
+renExp r (EC2I exp)            = EC2I (renExp r exp)
+renExp r (E2V exp)             = E2V (renExp r exp)
+renExp r (exp :& exp2)         = renExp r exp :& renExp r exp2
 
 renStmt :: Renaming ctx ctx2 -> Stmt ctx x -> Stmt ctx2 x
 renStmt r (Exp exp)           = Exp (renExp r exp)
