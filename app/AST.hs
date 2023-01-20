@@ -195,7 +195,7 @@ data Exp (ctx :: [CType]) (ty :: BType) where
   EPrint :: DBType b -> Exp xs b -> Exp xs b
   ERead :: DBType b -> Exp xs b
   -- Call
-  ERun :: ~(StmtBlock xs x) -> Exp xs x
+  ERun :: StmtBlock xs x -> Exp xs x
   -- Cast
   EI2F :: Exp xs 'BInt -> Exp xs 'BFloat
   EF2I :: Exp xs 'BFloat -> Exp xs 'BInt
@@ -224,15 +224,21 @@ deriving instance Show (Stmt ctx x)
 -- | A statement block.
 data StmtBlock (ctx :: [CType]) (b :: BType) where
   Empty :: StmtBlock xs x
+  Lazy :: ~(StmtBlock xs x) -> StmtBlock xs x
   (:.) :: Stmt xs x -> ~(StmtBlock xs x) -> StmtBlock xs x
 infixr 7 :.
 
 deriving instance Show (Sig (StmtBlock ctx))
-deriving instance Show (StmtBlock ctx x)
+instance Show (StmtBlock ctx x) where
+  show :: StmtBlock ctx x -> String
+  show Empty = ""
+  show (Lazy _) = "<fun call>"
+  show (s :. ss) = show s <> "; " <> show ss
 
 instance Semigroup (StmtBlock ctx b) where
   (<>) :: StmtBlock ctx b -> StmtBlock ctx b -> StmtBlock ctx b
   Empty <> stmts     = stmts
+  Lazy a <> stmts    = Lazy $ a <> stmts
   sig :. sb <> stmts = sig :. (sb <> stmts)
 
 data Function (global :: [CType]) (args :: [CType]) (ret :: BType) where
@@ -245,12 +251,31 @@ deriving instance Show (Sig2 (Function global))
 
 forceFun :: Function global ctx x -> ()
 forceFun (Fun sb)  = forceSB sb
-forceFun (Arg f _) = forceFun f
-forceFun (Ref f _) = forceFun f
+forceFun (Arg f b) = b `seq` forceFun f
+forceFun (Ref f c) = c `seq` forceFun f
+
+forceC :: DCType c -> ()
+forceC (DBType b)  = b `seq` ()
+forceC (DCArray c) = forceC c
 
 forceSB :: StmtBlock ctx x -> ()
-forceSB (_ :. sb) = forceSB sb
-forceSB Empty     = ()
+forceSB (stmt :. sb) = forceS stmt `seq` forceSB sb
+forceSB (Lazy _)     = ()
+forceSB Empty        = ()
+
+forceS :: Stmt ctx x -> ()
+forceS (Branch exp sb sb') = exp `seq` forceSB sb `seq` forceSB sb'
+forceS (Loop exp sb)       = exp `seq` forceSB sb
+forceS (Def dt dim sb)     = dt `seq` forceDim dim `seq` forceSB sb
+forceS (Return e)          = e `seq` ()
+forceS (Exp e)             = e `seq` ()
+forceS _                   = ()
+
+forceDim :: Dim c -> ()
+forceDim D0       = ()
+forceDim (DS i d) = i `seq` forceDim d
+
+-- forceExp :: E
 
 -- forceExp
 type family AppendRev ctx as where
@@ -317,8 +342,9 @@ renStmt _ Break               = Break
 renStmt _ Continue            = Continue
 
 renStmtBlock :: Renaming ctx ctx2 -> StmtBlock ctx x -> StmtBlock ctx2 x
-renStmtBlock _ Empty      = Empty
-renStmtBlock r (st :. sb) = renStmt r st :. renStmtBlock r sb
+renStmtBlock _ Empty        = Empty
+renStmtBlock r (Lazy stmts) = Lazy $ renStmtBlock r stmts
+renStmtBlock r (st :. sb)   = renStmt r st :. renStmtBlock r sb
 
 renFunction :: Renaming ctx ctx2 -> Function ctx args x -> Function ctx2 args x
 renFunction r (Fun sb)      = Fun (renStmtBlock r sb)

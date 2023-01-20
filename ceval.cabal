@@ -10,7 +10,6 @@ maintainer:         aliasqli@qq.com
 -- copyright:
 category:           Language
 build-type:         Simple
-extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 common default

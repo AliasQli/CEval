@@ -115,11 +115,11 @@ evalExp (EMod exp exp2) = do
 evalExp (EPrint b exp) = do
   exp <- evalExp exp
   () <- case b of
-    DInt    -> liftIO $ print exp
-    DFloat  -> liftIO $ print exp
-    DChar   -> liftIO $ print exp
-    DString -> liftIO $ print exp
-    DVoid   -> liftIO $ print exp
+    DInt    -> liftIO $ putStr $ show exp
+    DFloat  -> liftIO $ putStr $ show exp
+    DChar   -> liftIO $ putStr $ show exp
+    DString -> liftIO $ T.putStr exp
+    DVoid   -> liftIO $ putStr $ show exp
   pure exp
 evalExp (ERead b) = do
   case b of
@@ -162,6 +162,7 @@ evalStmt Continue     = pure C
 
 evalStmts :: StmtBlock ctx x -> ExceptT (B x) (StateT (Ctx ctx) IO) Next
 evalStmts Empty      = pure N
+evalStmts (AST.Lazy stmts)      = evalStmts stmts
 evalStmts (st :. sb) = do
   next <- evalStmt st
   case next of

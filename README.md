@@ -4,7 +4,9 @@ Strongly typed C interpreter. Compile with GHC 9.0.2.
 
 Coursework.
 
-### TODO
+All goals accomplished. May well typedness be with me.
+
+<!-- ### TODO
 
 - More operators (Done)
 
@@ -38,4 +40,4 @@ Coursework.
 
         - `Arg, arg val` -> `\stmts -> Def arg val stmts :. Empty`
 
-        - `Ref, var` -> `renStmtBlock (renw id var)`
+        - `Ref, var` -> `renStmtBlock (renw id var)` -->

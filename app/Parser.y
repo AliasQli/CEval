@@ -101,7 +101,6 @@ import qualified Lexer as L
 %left '==' '!=' '<' '>' '<=' '>='
 %left '+' '-'
 %left '*' '/' '%'
--- %nonassoc '(' ')'
 
 %%
 
