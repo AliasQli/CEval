@@ -1,6 +1,4 @@
 *.c
 *.cpp
-*.btx
-*.pdf
 *.docx
 dist-newstyle/
