@@ -2,7 +2,7 @@
 
 Strongly typed C interpreter. Compile with GHC 9.0.2.
 
-Coursework. See [report.pdf](./report.pdf) for my report (Chinese).
+Coursework. See [report.pdf](./report.pdf) for my report (Chinese). Part of the report was written merely to meet the course requirements.
 
 All goals accomplished. May well typedness be with me.
 
